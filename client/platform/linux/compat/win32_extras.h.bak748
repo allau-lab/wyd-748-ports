@@ -1,0 +1,727 @@
+#pragma once
+
+// APIs Win32 que o TMProject usa e o DXVK windows_base.h não cobre.
+#ifndef _WINDOWS_
+#include "windows.h"
+#endif
+#include <unknwn.h>
+#include <d3d9.h>
+
+#include <cstdio>
+#include <cstring>
+#include <ctime>
+#include <cmath>
+#include <cstdint>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <limits.h>
+#include <pthread.h>
+#include <chrono>
+#include <cstdarg>
+#include <algorithm>
+#include <string>
+#include <cstdlib>
+#include <utility>
+#include <fstream>
+
+struct SDL_Window;
+#ifndef WYD_HWND_IS_SDL
+using WYD_SDL_Window = SDL_Window;
+#endif
+
+#ifndef MAX_PATH
+#define MAX_PATH 260
+#endif
+
+// MSVC %I64d ≠ glibc: on Linux `%I64d` becomes width-64 `%d` and blanks UI numbers.
+#ifndef WYD_FMT_I64
+#define WYD_FMT_I64 "%lld"
+#endif
+#ifndef WYD_FMT_U64
+#define WYD_FMT_U64 "%llu"
+#endif
+#ifndef _O_BINARY
+#define _O_BINARY 0
+#define _O_RDONLY 0
+#define _O_RDWR 2
+#define _O_CREAT 0x100
+#define _O_TRUNC 0x200
+#endif
+#ifndef O_BINARY
+#define O_BINARY 0
+#endif
+
+#ifndef E_FAIL
+#define E_FAIL ((HRESULT)0x80004005L)
+#endif
+#ifndef E_NOINTERFACE
+#define E_NOINTERFACE ((HRESULT)0x80004002L)
+#endif
+#ifndef STDAPI
+#define STDAPI extern "C" HRESULT WINAPI
+#endif
+#ifndef STDAPI_
+#define STDAPI_(t) extern "C" t WINAPI
+#endif
+#ifndef REFIID
+#define REFIID const GUID&
+#endif
+#ifndef CP_ACP
+#define CP_ACP 0
+#endif
+#ifndef CALLBACK
+#define CALLBACK
+#endif
+#ifndef __cdecl
+#define __cdecl
+#endif
+#ifndef __stdcall
+#define __stdcall
+#endif
+#ifndef OPTIONAL
+#define OPTIONAL
+#endif
+#ifndef PASCAL
+#define PASCAL
+#endif
+
+#ifndef DOUBLE
+using DOUBLE = double;
+#endif
+#ifndef LPBYTE
+using LPBYTE = BYTE*;
+#endif
+#ifndef PDWORD
+using PDWORD = DWORD*;
+#endif
+#ifndef PULONG
+using PULONG = ULONG*;
+#endif
+#ifndef LPGUID
+using LPGUID = GUID*;
+#endif
+#ifndef LPCGUID
+using LPCGUID = const GUID*;
+#endif
+#ifndef LPCTSTR
+using LPCTSTR = LPCSTR;
+#endif
+#ifndef LPTSTR
+using LPTSTR = LPSTR;
+#endif
+#ifndef TCHAR
+using TCHAR = char;
+#endif
+#ifndef LPBOOL
+using LPBOOL = BOOL*;
+#endif
+#ifndef INT32
+using INT32 = int32_t;
+#endif
+#ifndef DWORD_PTR
+using DWORD_PTR = ULONG_PTR;
+#endif
+#ifndef LPUNKNOWN
+using LPUNKNOWN = IUnknown*;
+#endif
+#ifndef FILETIME_DEFINED
+#define FILETIME_DEFINED
+struct FILETIME {
+	DWORD dwLowDateTime {};
+	DWORD dwHighDateTime {};
+};
+#endif
+
+using HFONT = HANDLE;
+using HBRUSH = HANDLE;
+using HPEN = HANDLE;
+using HBITMAP = HANDLE;
+using HICON = HANDLE;
+using HCURSOR = HANDLE;
+using HMENU = HANDLE;
+using HRGN = HANDLE;
+using FARPROC = void (*)();
+
+#ifndef LF_FACESIZE
+#define LF_FACESIZE 32
+#endif
+struct LOGFONT {
+	LONG lfHeight {};
+	LONG lfWidth {};
+	LONG lfEscapement {};
+	LONG lfOrientation {};
+	LONG lfWeight {};
+	BYTE lfItalic {};
+	BYTE lfUnderline {};
+	BYTE lfStrikeOut {};
+	BYTE lfCharSet {};
+	BYTE lfOutPrecision {};
+	BYTE lfClipPrecision {};
+	BYTE lfQuality {};
+	BYTE lfPitchAndFamily {};
+	CHAR lfFaceName[LF_FACESIZE] {};
+};
+using LPLOGFONT = LOGFONT*;
+
+struct POINTFLOAT {
+	FLOAT x {};
+	FLOAT y {};
+};
+struct GLYPHMETRICSFLOAT {
+	FLOAT gmfBlackBoxX {};
+	FLOAT gmfBlackBoxY {};
+	POINTFLOAT gmfptGlyphOrigin {};
+	FLOAT gmfCellIncX {};
+	FLOAT gmfCellIncY {};
+};
+using LPGLYPHMETRICSFLOAT = GLYPHMETRICSFLOAT*;
+
+struct IStream {
+	virtual ~IStream() = default;
+	virtual ULONG AddRef() { return 1; }
+	virtual ULONG Release() { return 1; }
+	virtual HRESULT QueryInterface(REFIID, void**) { return E_NOINTERFACE; }
+};
+using LPSTREAM = IStream*;
+
+using errno_t = int;
+
+struct CRITICAL_SECTION {
+	pthread_mutex_t mtx {};
+	bool inited = false;
+};
+using LPCRITICAL_SECTION = CRITICAL_SECTION*;
+
+inline void InitializeCriticalSection(LPCRITICAL_SECTION cs)
+{
+	pthread_mutex_init(&cs->mtx, nullptr);
+	cs->inited = true;
+}
+inline void DeleteCriticalSection(LPCRITICAL_SECTION cs)
+{
+	if (cs->inited)
+		pthread_mutex_destroy(&cs->mtx);
+	cs->inited = false;
+}
+inline void EnterCriticalSection(LPCRITICAL_SECTION cs) { pthread_mutex_lock(&cs->mtx); }
+inline void LeaveCriticalSection(LPCRITICAL_SECTION cs) { pthread_mutex_unlock(&cs->mtx); }
+
+inline DWORD GetTickCount()
+{
+	using namespace std::chrono;
+	return static_cast<DWORD>(
+		duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count());
+}
+inline void Sleep(DWORD ms) { usleep(ms * 1000u); }
+inline DWORD timeGetTime() { return GetTickCount(); }
+
+inline int MessageBoxA(HWND, LPCSTR text, LPCSTR caption, UINT)
+{
+	std::fprintf(stderr, "[MessageBox] %s: %s\n", caption ? caption : "", text ? text : "");
+	return 1;
+}
+#define MessageBox MessageBoxA
+
+inline HWND FindWindowA(LPCSTR, LPCSTR) { return nullptr; }
+#define FindWindow FindWindowA
+
+inline char* GetCommandLineA()
+{
+	static char buf[4] = "";
+	return buf;
+}
+#define GetCommandLine GetCommandLineA
+
+inline void GetKeyboardLayoutNameA(char* out)
+{
+	if (out)
+		std::strcpy(out, "00000409");
+}
+#define GetKeyboardLayoutName GetKeyboardLayoutNameA
+
+inline std::string WYD_NormalizePath(const char* path)
+{
+	std::string out = path ? path : "";
+	for (char& c : out) {
+		if (c == '\\')
+			c = '/';
+	}
+	if (out.empty() || access(out.c_str(), F_OK) == 0)
+		return out;
+
+	// Pacote 7.48 mistura Mesh/mesh, Sound/sound etc. Windows ignora case; Linux não.
+	std::string resolved;
+	std::string remaining = out;
+	// Absolute path prefix
+	if (!remaining.empty() && remaining[0] == '/') {
+		resolved = "/";
+		remaining.erase(0, 1);
+	}
+
+	while (!remaining.empty()) {
+		const auto slash = remaining.find('/');
+		const std::string part = slash == std::string::npos ? remaining : remaining.substr(0, slash);
+		if (slash == std::string::npos)
+			remaining.clear();
+		else
+			remaining.erase(0, slash + 1);
+
+		if (part.empty() || part == ".")
+			continue;
+		if (part == "..") {
+			const auto p = resolved.find_last_of('/');
+			if (p == std::string::npos || resolved.empty())
+				resolved.clear();
+			else if (p == 0)
+				resolved = "/";
+			else
+				resolved.resize(p);
+			continue;
+		}
+
+		const std::string probe = resolved.empty() ? part : (resolved.back() == '/' ? resolved + part : resolved + "/" + part);
+		if (access(probe.c_str(), F_OK) == 0) {
+			resolved = probe;
+			continue;
+		}
+
+		const std::string parent = resolved.empty() ? "." : resolved;
+		DIR* dir = opendir(parent.c_str());
+		if (!dir)
+			return out;
+		std::string match;
+		while (dirent* ent = readdir(dir)) {
+			if (strcasecmp(ent->d_name, part.c_str()) == 0) {
+				match = ent->d_name;
+				break;
+			}
+		}
+		closedir(dir);
+		if (match.empty())
+			return out;
+		resolved = resolved.empty() ? match : (resolved.back() == '/' ? resolved + match : resolved + "/" + match);
+	}
+	return resolved.empty() ? out : resolved;
+}
+
+namespace wyd_io {
+// Ponteiro para o fopen do libc, capturado ANTES do #define abaixo.
+inline FILE* LibcFopen(const char* path, const char* mode)
+{
+	return std::fopen(path, mode);
+}
+}
+
+inline FILE* Wyd_fopen(const char* path, const char* mode)
+{
+	const std::string npath = WYD_NormalizePath(path);
+	return wyd_io::LibcFopen(npath.c_str(), mode);
+}
+// Paths do client usam '\\'; redireciona fopen CRT para normalizar no Linux.
+#ifdef fopen
+#undef fopen
+#endif
+#define fopen Wyd_fopen
+
+inline int _open(const char* path, int flags, int = 0644)
+{
+	int fl = O_RDONLY;
+	if (flags & _O_RDWR)
+		fl = O_RDWR;
+	if (flags & _O_CREAT)
+		fl |= O_CREAT;
+	if (flags & _O_TRUNC)
+		fl |= O_TRUNC;
+	const std::string npath = WYD_NormalizePath(path);
+	return ::open(npath.c_str(), fl, 0644);
+}
+inline int _close(int fd) { return ::close(fd); }
+inline long _filelength(int fd)
+{
+	struct stat st {};
+	if (fstat(fd, &st) != 0)
+		return -1;
+	return static_cast<long>(st.st_size);
+}
+inline int _read(int fd, void* buf, unsigned n) { return static_cast<int>(::read(fd, buf, n)); }
+inline int _write(int fd, const void* buf, unsigned n) { return static_cast<int>(::write(fd, buf, n)); }
+inline long _lseek(int fd, long off, int whence) { return static_cast<long>(::lseek(fd, off, whence)); }
+inline int _access(const char* p, int)
+{
+	const std::string npath = WYD_NormalizePath(p);
+	return access(npath.c_str(), F_OK);
+}
+
+inline errno_t memcpy_s(void* d, size_t ds, const void* s, size_t n)
+{
+	if (!d || !s || n > ds)
+		return 1;
+	if (n)
+		std::memcpy(d, s, n);
+	return 0;
+}
+
+
+inline errno_t strcpy_s(char* d, size_t n, const char* s)
+{
+	if (!d || !s || n == 0 || std::strlen(s) >= n)
+		return 1;
+	std::memcpy(d, s, std::strlen(s) + 1);
+	return 0;
+}
+
+
+template <size_t N>
+inline errno_t strcpy_s(char (&d)[N], const char* s)
+{
+	return strcpy_s(d, N, s);
+}
+inline int fopen_s(FILE** fp, const char* path, const char* mode)
+{
+	if (!fp)
+		return 1;
+	*fp = Wyd_fopen(path, mode);
+	return *fp ? 0 : 1;
+}
+inline int sprintf_s(char* d, size_t n, const char* fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	const int r = vsnprintf(d, n, fmt, ap);
+	va_end(ap);
+	return r < 0 ? 1 : 0;
+}
+template <size_t N>
+inline int sprintf_s(char (&d)[N], const char* fmt, ...)
+{
+	va_list ap;
+	va_start(ap, fmt);
+	const int r = vsnprintf(d, N, fmt, ap);
+	va_end(ap);
+	return r < 0 ? 1 : 0;
+}
+inline int vsprintf_s(char* d, size_t n, const char* fmt, va_list ap)
+{
+	return vsnprintf(d, n, fmt, ap);
+}
+template <size_t N>
+inline int vsprintf_s(char (&d)[N], const char* fmt, va_list ap)
+{
+	return vsnprintf(d, N, fmt, ap);
+}
+inline errno_t strncpy_s(char* d, size_t n, const char* s, size_t count)
+{
+	if (!d || !s || !n)
+		return 1;
+	const size_t m = std::min(count, n - 1);
+	std::strncpy(d, s, m);
+	return 0;
+}
+
+
+template <size_t N>
+inline errno_t strncpy_s(char (&d)[N], const char* s, size_t count)
+{
+	return strncpy_s(d, N, s, count);
+}
+inline char* _itoa(int v, char* buf, int /*radix*/)
+{
+	if (!buf)
+		return nullptr;
+	std::sprintf(buf, "%d", v);
+	return buf;
+}
+inline long long _atoi64(const char* s) { return s ? std::atoll(s) : 0; }
+
+using LPTHREAD_START_ROUTINE = DWORD (*)(void*);
+inline HANDLE CreateThread(SECURITY_ATTRIBUTES* /*sa*/, SIZE_T /*stack*/, LPTHREAD_START_ROUTINE start, void* param, DWORD /*flags*/, LPDWORD id)
+{
+	pthread_t th {};
+	struct Box { LPTHREAD_START_ROUTINE fn; void* arg; };
+	auto* box = new Box{ start, param };
+	pthread_create(&th, nullptr, [](void* p) -> void* {
+		auto* b = static_cast<Box*>(p);
+		auto fn = b->fn;
+		auto arg = b->arg;
+		delete b;
+		if (fn)
+			fn(arg);
+		return nullptr;
+	}, box);
+	if (id)
+		*id = static_cast<DWORD>(reinterpret_cast<uintptr_t>(th));
+	return reinterpret_cast<HANDLE>(th);
+}
+#ifndef LPSECURITY_ATTRIBUTES
+using LPSECURITY_ATTRIBUTES = SECURITY_ATTRIBUTES*;
+#endif
+inline DWORD GetLastError() { return 0; }
+inline char* CharNextA(char* p) { return p ? p + 1 : p; }
+inline char* CharPrevA(const char* start, char* p)
+{
+	if (!start || !p || p <= start)
+		return const_cast<char*>(start);
+	return p - 1;
+}
+#define CharNext CharNextA
+#define CharPrev CharPrevA
+
+inline void* ShellExecuteA(HWND, LPCSTR /*op*/, LPCSTR file, LPCSTR, LPCSTR, INT)
+{
+	// Comportamento alinhado ao Win32: só “open” se o alvo existir.
+	// Nunca passar a string por /bin/sh — URLs com aspas quebravam em command injection.
+	if (!file || !file[0])
+		return nullptr;
+
+	const bool isUrl =
+		std::strncmp(file, "http://", 7) == 0 ||
+		std::strncmp(file, "https://", 8) == 0 ||
+		std::strncmp(file, "mailto:", 7) == 0;
+
+	auto spawnOpen = [](const char* target) -> void* {
+		if (!target || !target[0])
+			return nullptr;
+		const pid_t pid = fork();
+		if (pid == 0) {
+			execlp("xdg-open", "xdg-open", target, static_cast<char*>(nullptr));
+			_exit(127);
+		}
+		return pid > 0 ? reinterpret_cast<void*>(intptr_t(42)) : nullptr;
+	};
+
+	if (isUrl)
+		return spawnOpen(file);
+
+	const std::string nfile = WYD_NormalizePath(file);
+	if (access(nfile.c_str(), F_OK) != 0)
+		return nullptr;
+
+	if (access(nfile.c_str(), X_OK) == 0) {
+		const pid_t pid = fork();
+		if (pid == 0) {
+			execl(nfile.c_str(), nfile.c_str(), static_cast<char*>(nullptr));
+			_exit(127);
+		}
+		return pid > 0 ? reinterpret_cast<void*>(intptr_t(42)) : nullptr;
+	}
+
+	char abs[PATH_MAX] {};
+	if (!realpath(nfile.c_str(), abs))
+		return nullptr;
+	return spawnOpen(abs);
+}
+#define ShellExecute ShellExecuteA
+inline void AllocConsole() {}
+
+inline DWORD GetCurrentDirectoryA(DWORD n, LPSTR buf)
+{
+	if (!getcwd(buf, n))
+		return 0;
+	return static_cast<DWORD>(std::strlen(buf));
+}
+#define GetCurrentDirectory GetCurrentDirectoryA
+inline BOOL SetCurrentDirectoryA(LPCSTR p) { return chdir(p) == 0; }
+#define SetCurrentDirectory SetCurrentDirectoryA
+inline BOOL DeleteFileA(LPCSTR p) { return p && unlink(p) == 0; }
+#define DeleteFile DeleteFileA
+#ifndef _stricmp
+#define _stricmp strcasecmp
+#define _strnicmp strncasecmp
+#endif
+#ifndef _S_IWRITE
+#define _S_IWRITE S_IWUSR
+#define _S_IREAD S_IRUSR
+#endif
+inline int _commit(int fd) { return fsync(fd); }
+
+#pragma push_macro("st_mtime")
+#undef st_mtime
+struct _stat64i32 {
+	long long st_size;
+	long st_mtime;
+	int st_mode;
+};
+inline int _stat64i32(const char* path, _stat64i32* out)
+{
+	struct stat s {};
+	const std::string npath = WYD_NormalizePath(path);
+	if (stat(npath.c_str(), &s) != 0)
+		return -1;
+	if (out) {
+		out->st_size = s.st_size;
+#if defined(__linux__)
+		out->st_mtime = static_cast<long>(s.st_mtim.tv_sec);
+#else
+		out->st_mtime = static_cast<long>(s.st_mtime);
+#endif
+		out->st_mode = static_cast<int>(s.st_mode);
+	}
+	return 0;
+}
+
+
+#pragma pop_macro("st_mtime")
+#ifndef FILE_ATTRIBUTE_NORMAL
+#define FILE_ATTRIBUTE_NORMAL 0x80
+#endif
+inline BOOL SetFileAttributesA(LPCSTR, DWORD) { return TRUE; }
+#define SetFileAttributes SetFileAttributesA
+inline BOOL CopyFileA(LPCSTR src, LPCSTR dst, BOOL failIfExists)
+{
+	if (!src || !dst)
+		return FALSE;
+	const std::string nsrc = WYD_NormalizePath(src);
+	const std::string ndst = WYD_NormalizePath(dst);
+	if (failIfExists && access(ndst.c_str(), F_OK) == 0)
+		return FALSE;
+	std::ifstream in(nsrc, std::ios::binary);
+	if (!in)
+		return FALSE;
+	std::ofstream out(ndst, std::ios::binary);
+	if (!out)
+		return FALSE;
+	out << in.rdbuf();
+	return TRUE;
+}
+#define CopyFile CopyFileA
+
+inline BOOL IsDebuggerPresent() { return FALSE; }
+inline void OutputDebugStringA(LPCSTR s)
+{
+	if (s)
+		std::fputs(s, stderr);
+}
+#define OutputDebugString OutputDebugStringA
+inline UINT GetSystemDirectoryA(LPSTR buf, UINT n)
+{
+	if (!buf || n < 2)
+		return 0;
+	std::strncpy(buf, ".", n);
+	buf[n - 1] = 0;
+	return 1;
+}
+inline DWORD GetModuleFileNameA(HMODULE, LPSTR buf, DWORD n)
+{
+	if (!buf || !n)
+		return 0;
+	ssize_t len = readlink("/proc/self/exe", buf, n - 1);
+	if (len <= 0) {
+		std::strncpy(buf, "wyd_client", n);
+		buf[n - 1] = 0;
+		return static_cast<DWORD>(std::strlen(buf));
+	}
+	buf[len] = 0;
+	return static_cast<DWORD>(len);
+}
+#define GetModuleFileName GetModuleFileNameA
+inline HMODULE GetModuleHandleA(LPCSTR) { return nullptr; }
+#define GetModuleHandle GetModuleHandleA
+
+#ifndef CopyMemory
+inline void CopyMemory(void* d, const void* s, size_t n) { if (d && s && n) std::memcpy(d, s, n); }
+#endif
+#ifndef MoveMemory
+inline void MoveMemory(void* d, const void* s, size_t n) { if (d && s && n) std::memmove(d, s, n); }
+#endif
+inline DWORD GetFileAttributesA(LPCSTR p)
+{
+	struct stat st {};
+	if (!p || stat(p, &st) != 0)
+		return static_cast<DWORD>(-1);
+	return S_ISDIR(st.st_mode) ? 0x10u : 0x80u;
+}
+#define GetFileAttributes GetFileAttributesA
+#ifndef INVALID_FILE_ATTRIBUTES
+#define INVALID_FILE_ATTRIBUTES ((DWORD)-1)
+#endif
+inline DWORD GetFullPathNameA(LPCSTR file, DWORD n, LPSTR buf, LPSTR* filePart)
+{
+	if (!file || !buf || !n)
+		return 0;
+	char* resolved = realpath(file, nullptr);
+	if (!resolved) {
+		std::strncpy(buf, file, n);
+		buf[n - 1] = 0;
+	} else {
+		std::strncpy(buf, resolved, n);
+		buf[n - 1] = 0;
+		free(resolved);
+	}
+	if (filePart) {
+		char* slash = std::strrchr(buf, '/');
+		*filePart = slash ? slash + 1 : buf;
+	}
+	return static_cast<DWORD>(std::strlen(buf));
+}
+#define GetFullPathName GetFullPathNameA
+#ifndef lstrcpyn
+inline LPSTR lstrcpynA(LPSTR dst, LPCSTR src, int n)
+{
+	if (!dst || n <= 0)
+		return dst;
+	if (!src) {
+		dst[0] = 0;
+		return dst;
+	}
+	std::strncpy(dst, src, static_cast<size_t>(n - 1));
+	dst[n - 1] = 0;
+	return dst;
+}
+#define lstrcpyn lstrcpynA
+#endif
+
+struct EXCEPTION_RECORD {
+	DWORD ExceptionCode {};
+	void* ExceptionAddress {};
+};
+struct EXCEPTION_POINTERS {
+	EXCEPTION_RECORD* ExceptionRecord {};
+	void* ContextRecord {};
+};
+using LPTOP_LEVEL_EXCEPTION_FILTER = LONG (*)(EXCEPTION_POINTERS*);
+inline LPTOP_LEVEL_EXCEPTION_FILTER SetUnhandledExceptionFilter(LPTOP_LEVEL_EXCEPTION_FILTER) { return nullptr; }
+
+inline BOOL QueryPerformanceCounter(LARGE_INTEGER* li)
+{
+	using namespace std::chrono;
+	const auto n = steady_clock::now().time_since_epoch().count();
+	if (li)
+		li->QuadPart = static_cast<LONGLONG>(n);
+	return TRUE;
+}
+inline BOOL QueryPerformanceFrequency(LARGE_INTEGER* li)
+{
+	if (li)
+		li->QuadPart = 1000000000LL;
+	return TRUE;
+}
+inline void GlobalMemoryStatus(MEMORYSTATUS* ms)
+{
+	if (!ms)
+		return;
+	ms->dwLength = sizeof(*ms);
+	ms->dwTotalPhys = 8ull << 30;
+}
+inline int MultiByteToWideChar(UINT, DWORD, LPCSTR s, int n, LPWSTR, int)
+{
+	return n < 0 ? static_cast<int>(std::strlen(s ? s : "")) + 1 : n;
+}
+inline int WideCharToMultiByte(UINT, DWORD, LPCWSTR, int n, LPSTR, int, LPCSTR, LPBOOL)
+{
+	return n < 0 ? 1 : n;
+}
+
+#ifndef SAFE_DELETE
+#define SAFE_DELETE(p) do { delete (p); (p)=nullptr; } while(0)
+#endif
+#ifndef SAFE_RELEASE
+#define SAFE_RELEASE(p) do { if(p){ (p)->Release(); (p)=nullptr; } } while(0)
+#endif
+#ifndef _T
+#define _T(x) x
+#define TEXT(x) x
+#endif
+
+#include "win32_bulk.h"

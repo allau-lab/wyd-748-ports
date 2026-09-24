@@ -1,0 +1,22 @@
+# Subir no Orange Pi (aarch64):
+#   cd ~/ServidorArm64 && docker compose -f docker/docker-compose.yml up -d --build
+services:
+  tm:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: wyd748-arm64:local
+    container_name: wyd748-arm64
+    restart: unless-stopped
+    # UID do usuário orangepi no host (bind mount gravável)
+    user: "1000:1000"
+    ports:
+      - "8281:8281"
+    volumes:
+      - ../data:/opt/wyd/data
+      - ../logs:/opt/wyd/logs
+    working_dir: /opt/wyd
+    environment:
+      WYD_ADMIN_PASSWORD: "${WYD_ADMIN_PASSWORD:-CHANGE_ME}"
+    stop_grace_period: 40s
+    stop_signal: SIGTERM

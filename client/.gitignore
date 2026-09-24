@@ -1,0 +1,16 @@
+# Artefatos locais / build
+/build/
+/build-*/
+/OUT/
+/third_party/dxvk-native/
+*.o
+*.a
+*.elf
+*.nro
+*.nacp
+*.bak
+*.bak-*
+client748/ItemList.bin.bak*
+client748/*.log
+client748/client-debug.log
+client748/clientlogs.log

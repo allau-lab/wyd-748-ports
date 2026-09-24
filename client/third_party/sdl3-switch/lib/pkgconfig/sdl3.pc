@@ -1,0 +1,13 @@
+prefix=/work/third_party/sdl3-switch
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: sdl3
+Description: Simple DirectMedia Layer is a cross-platform multimedia library designed to provide low level access to audio, keyboard, mouse, joystick, 3D hardware via OpenGL, and 2D video framebuffer.
+URL: https://www.libsdl.org/
+Version: 3.4.0
+Requires.private: 
+Conflicts:
+Libs: -L${libdir}  -lSDL3   -lpthread -lm -lnx -lEGL -lstdc++ -lglapi -ldrm_nouveau
+Cflags: -I${includedir} 

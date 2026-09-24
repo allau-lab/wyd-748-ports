@@ -1,0 +1,7 @@
+logs/*
+backup/*
+build-arm64.sh
+iniciar.sh
+LEIA-ME.md
+data/wydgo.db-wal
+data/wydgo.db-shm

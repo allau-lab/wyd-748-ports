@@ -1,0 +1,491 @@
+// GDI Linux — rasterização de fonte real via stb_truetype + DIB em memória.
+#include "wingdi.h"
+
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "stb_truetype.h"
+
+#include <vector>
+#include <string>
+#include <fstream>
+#include <memory>
+#include <cstring>
+#include <algorithm>
+#include <cmath>
+#include <map>
+#include <iconv.h>
+#include <cerrno>
+#include <cstdio>
+
+namespace
+{
+
+struct FontObj
+{
+    std::vector<unsigned char> ttf;
+    stbtt_fontinfo info {};
+    float pixelHeight = 16.f;
+    float scale = 1.f;
+    int ascent = 0;
+    int lineHeight = 0; // célula de caractere p/ fundo OPAQUE (ascent - descent)
+};
+
+struct DibObj
+{
+    int w = 0;
+    int h = 0;
+    std::vector<uint32_t> pixels; // A8R8G8B8
+};
+
+struct DcObj
+{
+    DibObj* dib = nullptr;
+    FontObj* font = nullptr;
+    COLORREF textColor = 0x00FFFFFF;
+    COLORREF bkColor = 0;
+    int bkMode = OPAQUE;
+    HWND hwnd = nullptr;
+};
+
+std::map<HDC, std::unique_ptr<DcObj>> g_dcs;
+std::map<HFONT, std::unique_ptr<FontObj>> g_fonts;
+std::map<HBITMAP, std::unique_ptr<DibObj>> g_dibs;
+
+DcObj* DC(HDC h) { return h ? reinterpret_cast<DcObj*>(h) : nullptr; }
+
+// Client 7.48 / Win32 CP_ACP coreano: strings em CP949.
+std::vector<int> DecodeCp949ToCodepoints(const char* s, int nbytes)
+{
+    std::vector<int> out;
+    if (!s || nbytes <= 0)
+        return out;
+
+    iconv_t cd = iconv_open("UTF-32LE", "CP949");
+    if (cd == reinterpret_cast<iconv_t>(-1))
+        cd = iconv_open("UTF-32LE", "EUC-KR");
+    if (cd == reinterpret_cast<iconv_t>(-1)) {
+        for (int i = 0; i < nbytes; ++i)
+            out.push_back(static_cast<unsigned char>(s[i]));
+        return out;
+    }
+
+    std::vector<char> inbuf(s, s + nbytes);
+    size_t inleft = static_cast<size_t>(nbytes);
+    char* inptr = inbuf.data();
+    std::vector<char> outbuf(static_cast<size_t>(nbytes) * 4 + 16);
+    size_t outleft = outbuf.size();
+    char* outptr = outbuf.data();
+    if (iconv(cd, &inptr, &inleft, &outptr, &outleft) == static_cast<size_t>(-1)) {
+        iconv_close(cd);
+        for (int i = 0; i < nbytes; ++i)
+            out.push_back(static_cast<unsigned char>(s[i]));
+        return out;
+    }
+    iconv_close(cd);
+
+    const size_t produced = outbuf.size() - outleft;
+    for (size_t i = 0; i + 3 < produced; i += 4) {
+        const int cp = static_cast<unsigned char>(outbuf[i]) |
+            (static_cast<unsigned char>(outbuf[i + 1]) << 8) |
+            (static_cast<unsigned char>(outbuf[i + 2]) << 16) |
+            (static_cast<unsigned char>(outbuf[i + 3]) << 24);
+        if (cp != 0)
+            out.push_back(cp);
+    }
+    return out;
+}
+
+std::string FindFontFile(const char* face)
+{
+    std::vector<std::string> candidates;
+    if (face && face[0]) {
+        candidates.push_back(face);
+        const std::string f = face;
+        if (f.find("Nanum") != std::string::npos || f.find("nanum") != std::string::npos) {
+            candidates.push_back("/usr/share/fonts/truetype/nanum/NanumGothic.ttf");
+            candidates.push_back("/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf");
+        }
+    }
+    // Empacotado no client748 (montado como /game no container aarch64).
+    candidates.push_back("fonts/NotoSans-Regular.ttf");
+    candidates.push_back("fonts/DroidSans.ttf");
+    candidates.push_back("/game/fonts/NotoSans-Regular.ttf");
+    candidates.push_back("/game/fonts/DroidSans.ttf");
+    candidates.push_back("./fonts/NotoSans-Regular.ttf");
+    candidates.push_back("./fonts/DroidSans.ttf");
+    // Host / container com pacotes de fonte.
+    candidates.push_back("/usr/share/fonts/noto/NotoSans-Regular.ttf");
+    candidates.push_back("/usr/share/fonts/droid/DroidSans.ttf");
+    candidates.push_back("/usr/share/fonts/truetype/nanum/NanumGothic.ttf");
+    candidates.push_back("/usr/share/fonts/truetype/nanum/NanumBarunGothic.ttf");
+    candidates.push_back("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc");
+    candidates.push_back("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
+    candidates.push_back("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf");
+    candidates.push_back("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf");
+
+    for (const auto& c : candidates) {
+        if (c.empty())
+            continue;
+        std::ifstream f(c, std::ios::binary);
+        if (f)
+            return c;
+    }
+    return {};
+}
+
+bool InitStbFont(FontObj& font, const std::string& path)
+{
+    std::ifstream f(path, std::ios::binary);
+    font.ttf.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    if (font.ttf.empty())
+        return false;
+    const int offset = stbtt_GetFontOffsetForIndex(font.ttf.data(), 0);
+    if (offset < 0)
+        return false;
+    return stbtt_InitFont(&font.info, font.ttf.data(), offset) != 0;
+}
+
+} // namespace
+
+HDC GetDC(HWND hWnd)
+{
+    auto dc = std::make_unique<DcObj>();
+    dc->hwnd = hWnd;
+    HDC h = reinterpret_cast<HDC>(dc.get());
+    g_dcs[h] = std::move(dc);
+    return h;
+}
+
+int ReleaseDC(HWND, HDC hdc)
+{
+    g_dcs.erase(hdc);
+    return 1;
+}
+
+HDC CreateDCA(LPCSTR, LPCSTR, LPCSTR, const void*)
+{
+    return GetDC(nullptr);
+}
+
+BOOL DeleteDC(HDC hdc)
+{
+    g_dcs.erase(hdc);
+    return TRUE;
+}
+
+int GetDeviceCaps(HDC, int index)
+{
+    SDL_DisplayMode mode {};
+#ifdef WYD_USE_SDL3
+    // SDL3: display primário + GetDesktopDisplayMode retorna ponteiro (pode ser NULL).
+    const SDL_DisplayMode* dm = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay());
+    if (dm)
+        mode = *dm;
+    else {
+        mode.w = 1920;
+        mode.h = 1080;
+        mode.refresh_rate = 60.f;
+    }
+#else
+    if (SDL_GetDesktopDisplayMode(0, &mode) != 0) {
+        mode.w = 1920;
+        mode.h = 1080;
+        mode.refresh_rate = 60;
+    }
+#endif
+    switch (index) {
+    case HORZRES: return mode.w;
+    case VERTRES: return mode.h;
+    case BITSPIXEL: return 32;
+    case VREFRESH: return mode.refresh_rate > 0 ? static_cast<int>(mode.refresh_rate) : 60;
+    default: return 0;
+    }
+}
+
+BOOL SetDeviceGammaRamp(HDC hdc, LPVOID ramp)
+{
+    auto* dc = DC(hdc);
+    if (!dc || !dc->hwnd || !ramp)
+        return FALSE;
+    auto* win = reinterpret_cast<SDL_Window*>(dc->hwnd);
+    auto* r = static_cast<uint16_t(*)[256]>(ramp);
+#ifdef WYD_USE_SDL3
+    // SDL3 não disponibiliza gamma ramp de janela na API pública atual; fallback soft.
+    (void)win;
+    (void)r;
+    return FALSE;
+#else
+    return SDL_SetWindowGammaRamp(win, r[0], r[1], r[2]) == 0 ? TRUE : FALSE;
+#endif
+}
+
+BOOL EnumDisplaySettingsA(LPCSTR, DWORD modeNum, DEVMODEA* devMode)
+{
+    if (!devMode)
+        return FALSE;
+#ifdef WYD_USE_SDL3
+    // SDL3: lista full-screen modes via SDL_GetFullscreenDisplayModes (caller libera).
+    int n = 0;
+    SDL_DisplayMode** modes = SDL_GetFullscreenDisplayModes(SDL_GetPrimaryDisplay(), &n);
+    if (!modes) {
+        SDL_free(modes);
+        return FALSE;
+    }
+    if (static_cast<int>(modeNum) >= n || !modes[modeNum]) {
+        SDL_free(modes);
+        return FALSE;
+    }
+    const SDL_DisplayMode& mode = *modes[modeNum];
+#else
+    const int n = SDL_GetNumDisplayModes(0);
+    if (static_cast<int>(modeNum) >= n)
+        return FALSE;
+    SDL_DisplayMode mode {};
+    if (SDL_GetDisplayMode(0, static_cast<int>(modeNum), &mode) != 0)
+        return FALSE;
+#endif
+    std::memset(devMode, 0, sizeof(*devMode));
+    devMode->dmSize = sizeof(DEVMODEA);
+    devMode->dmPelsWidth = mode.w;
+    devMode->dmPelsHeight = mode.h;
+    devMode->dmBitsPerPel = 32;
+    devMode->dmDisplayFrequency = mode.refresh_rate > 0 ? static_cast<int>(mode.refresh_rate) : 60;
+    devMode->dmFields = 0xDC0000; // bits roughly matching Win32
+#ifdef WYD_USE_SDL3
+    SDL_free(modes);
+#endif
+    return TRUE;
+}
+
+LONG ChangeDisplaySettingsA(DEVMODEA* dm, DWORD)
+{
+    if (!dm)
+        return 0;
+    // Wayland: resolução via SDL_Window — aplicada quando NewApp cria a janela.
+    return 0; // DISP_CHANGE_SUCCESSFUL
+}
+
+HDC CreateCompatibleDC(HDC)
+{
+    return GetDC(nullptr);
+}
+
+HBITMAP CreateDIBSection(HDC, const BITMAPINFO* pbmi, UINT, void** ppvBits, HANDLE, DWORD)
+{
+    if (!pbmi || !ppvBits)
+        return nullptr;
+    auto dib = std::make_unique<DibObj>();
+    dib->w = pbmi->bmiHeader.biWidth;
+    dib->h = std::abs(pbmi->bmiHeader.biHeight);
+    if (dib->w <= 0 || dib->h <= 0)
+        return nullptr;
+    dib->pixels.assign(static_cast<size_t>(dib->w * dib->h), 0);
+    *ppvBits = dib->pixels.data();
+    HBITMAP h = reinterpret_cast<HBITMAP>(dib.get());
+    g_dibs[h] = std::move(dib);
+    return h;
+}
+
+HFONT CreateFontA(int cHeight, int, int, int, int, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, DWORD, LPCSTR pszFaceName)
+{
+    auto font = std::make_unique<FontObj>();
+    std::string path = FindFontFile(pszFaceName);
+    if (path.empty())
+        path = FindFontFile(nullptr);
+    if (path.empty() || !InitStbFont(*font, path)) {
+        std::fprintf(stderr,
+            "[WYDLINUX] CreateFontA falhou (face=%s). Sem TTF o texto fica invisível.\n",
+            pszFaceName ? pszFaceName : "(null)");
+        return nullptr;
+    }
+    std::fprintf(stderr, "[WYDLINUX] fonte UI: %s @ %dpx\n", path.c_str(),
+        std::abs(cHeight) > 0 ? std::abs(cHeight) : 16);
+    font->pixelHeight = static_cast<float>(std::abs(cHeight) > 0 ? std::abs(cHeight) : 16);
+    font->scale = stbtt_ScaleForPixelHeight(&font->info, font->pixelHeight);
+    int ascent = 0, descent = 0, lineGap = 0;
+    stbtt_GetFontVMetrics(&font->info, &ascent, &descent, &lineGap);
+    font->ascent = static_cast<int>(ascent * font->scale);
+    font->lineHeight = static_cast<int>((ascent - descent) * font->scale);
+    HFONT h = reinterpret_cast<HFONT>(font.get());
+    g_fonts[h] = std::move(font);
+    return h;
+}
+
+HGDIOBJ SelectObject(HDC hdc, HGDIOBJ obj)
+{
+    auto* dc = DC(hdc);
+    if (!dc)
+        return nullptr;
+    if (g_dibs.count(reinterpret_cast<HBITMAP>(obj))) {
+        HGDIOBJ prev = reinterpret_cast<HGDIOBJ>(dc->dib);
+        dc->dib = reinterpret_cast<DibObj*>(obj);
+        return prev;
+    }
+    if (g_fonts.count(reinterpret_cast<HFONT>(obj))) {
+        HGDIOBJ prev = reinterpret_cast<HGDIOBJ>(dc->font);
+        dc->font = reinterpret_cast<FontObj*>(obj);
+        return prev;
+    }
+    return nullptr;
+}
+
+BOOL DeleteObject(HGDIOBJ obj)
+{
+    if (g_dibs.erase(reinterpret_cast<HBITMAP>(obj)))
+        return TRUE;
+    if (g_fonts.erase(reinterpret_cast<HFONT>(obj)))
+        return TRUE;
+    return FALSE;
+}
+
+COLORREF SetTextColor(HDC hdc, COLORREF color)
+{
+    auto* dc = DC(hdc);
+    if (!dc)
+        return 0;
+    const COLORREF prev = dc->textColor;
+    dc->textColor = color;
+    return prev;
+}
+
+COLORREF SetBkColor(HDC hdc, COLORREF color)
+{
+    auto* dc = DC(hdc);
+    if (!dc)
+        return 0;
+    const COLORREF prev = dc->bkColor;
+    dc->bkColor = color;
+    return prev;
+}
+
+int SetBkMode(HDC hdc, int mode)
+{
+    auto* dc = DC(hdc);
+    if (!dc)
+        return 0;
+    const int prev = dc->bkMode;
+    dc->bkMode = mode;
+    return prev;
+}
+
+BOOL GetTextExtentPoint32A(HDC hdc, LPCSTR lpString, int c, LPSIZE psizl)
+{
+    auto* dc = DC(hdc);
+    if (!dc || !dc->font || !psizl)
+        return FALSE;
+    if (c < 0)
+        c = static_cast<int>(std::strlen(lpString ? lpString : ""));
+    const auto cps = DecodeCp949ToCodepoints(lpString, c);
+    float x = 0;
+    int maxy = 0;
+    for (int code : cps) {
+        int adv = 0, lsb = 0;
+        stbtt_GetGlyphHMetrics(&dc->font->info, stbtt_FindGlyphIndex(&dc->font->info, code), &adv, &lsb);
+        x += stbtt_ScaleForPixelHeight(&dc->font->info, dc->font->pixelHeight) * static_cast<float>(adv);
+        stbtt_GetGlyphBitmapBox(&dc->font->info, stbtt_FindGlyphIndex(&dc->font->info, code),
+            dc->font->scale, dc->font->scale, nullptr, nullptr, &lsb, &maxy);
+    }
+    psizl->cx = static_cast<int>(std::ceil(x));
+    // Altura da célula (tmHeight ≈ ascent-descent); o bitmap box do glifo é relativo
+    // à baseline e NÃO serve de altura da linha.
+    psizl->cy = dc->font->lineHeight > 0
+        ? dc->font->lineHeight
+        : static_cast<int>(dc->font->pixelHeight);
+    return TRUE;
+}
+
+// TMFont2::SetText desenha o log de debug no DC; hbr NULL = sem fundo.
+int FillRect(HDC hdc, const RECT* lprc, HBRUSH hbr)
+{
+    auto* dc = DC(hdc);
+    if (!dc || !lprc)
+        return 0;
+    if (!hbr || !dc->dib)
+        return 1;
+    const int x0 = std::max(0, lprc->left);
+    const int y0 = std::max(0, lprc->top);
+    const int x1 = std::min(dc->dib->w, lprc->right);
+    const int y1 = std::min(dc->dib->h, lprc->bottom);
+    // DIB Win32 32bpp é B,G,R na memória; o jogo lê o byte 0 (azul) como alpha.
+    const uint32_t bkc = static_cast<uint32_t>(dc->bkColor);
+    const uint32_t color = 0xFF000000u | ((bkc & 0xFFu) << 16) | (bkc & 0xFF00u)
+        | ((bkc >> 16) & 0xFFu);
+    for (int y = y0; y < y1; ++y)
+        for (int x = x0; x < x1; ++x)
+            dc->dib->pixels[static_cast<size_t>(y) * dc->dib->w + x] = color;
+    return 1;
+}
+
+BOOL TextOutA(HDC hdc, int x, int y, LPCSTR lpString, int c)
+{
+    auto* dc = DC(hdc);
+    if (!dc || !lpString || !dc->dib || !dc->font)
+        return TRUE;
+    if (c < 0)
+        c = static_cast<int>(std::strlen(lpString));
+    if (c <= 0)
+        return TRUE;
+    const auto cps = DecodeCp949ToCodepoints(lpString, c);
+    const uint8_t cr = static_cast<uint8_t>(dc->textColor & 0xFF);
+    const uint8_t cg = static_cast<uint8_t>((dc->textColor >> 8) & 0xFF);
+    const uint8_t cb = static_cast<uint8_t>((dc->textColor >> 16) & 0xFF);
+    DibObj* dib = dc->dib;
+    float penX = static_cast<float>(x);
+    const int baseline = y + dc->font->ascent;
+    // GDI OPAQUE: cada célula de caractere ([pen, pen+adv) × [y, y+lineHeight))
+    // recebe o bkColor ANTES do glifo. O cliente 7.48 apaga a linha anterior
+    // desenhando uma fileira de espaços — sem isso os textos se acumulam.
+    const bool opaque = (dc->bkMode != TRANSPARENT);
+    const uint32_t bk = 0xFF000000u | static_cast<uint32_t>(dc->bkColor);
+    const int cellTop = y;
+    const int cellH = dc->font->lineHeight > 0
+        ? dc->font->lineHeight
+        : static_cast<int>(dc->font->pixelHeight);
+    for (int code : cps) {
+        const int gi = stbtt_FindGlyphIndex(&dc->font->info, code);
+        int adv = 0, lsb = 0;
+        stbtt_GetGlyphHMetrics(&dc->font->info, gi, &adv, &lsb);
+        const float advF = dc->font->scale * static_cast<float>(adv);
+        const int cellL = static_cast<int>(penX);
+        const int cellR = static_cast<int>(penX + advF);
+        if (opaque && cellR > cellL) {
+            for (int by = cellTop; by < cellTop + cellH; ++by) {
+                if (by < 0 || by >= dib->h)
+                    continue;
+                for (int bx = cellL; bx < cellR; ++bx) {
+                    if (bx < 0 || bx >= dib->w)
+                        continue;
+                    dib->pixels[static_cast<size_t>(by) * dib->w + bx] = bk;
+                }
+            }
+        }
+        int ix0 = 0, iy0 = 0, ix1 = 0, iy1 = 0;
+        stbtt_GetGlyphBitmapBox(&dc->font->info, gi, dc->font->scale, dc->font->scale,
+            &ix0, &iy0, &ix1, &iy1);
+        const int gw = ix1 - ix0;
+        const int gh = iy1 - iy0;
+        if (gw > 0 && gh > 0) {
+            std::vector<unsigned char> bmp(static_cast<size_t>(gw) * gh);
+            stbtt_MakeGlyphBitmap(&dc->font->info, bmp.data(), gw, gh, gw,
+                dc->font->scale, dc->font->scale, gi);
+            const int baseX = static_cast<int>(penX) + ix0;
+            for (int gy = 0; gy < gh; ++gy) {
+                const int dy = baseline + iy0 + gy;
+                if (dy < 0 || dy >= dib->h)
+                    continue;
+                for (int gx = 0; gx < gw; ++gx) {
+                    const int dx = baseX + gx;
+                    if (dx < 0 || dx >= dib->w)
+                        continue;
+                    if (!bmp[static_cast<size_t>(gy) * gw + gx])
+                        continue;
+                    // Layout B,G,R (Windows): byte 0 = azul = alpha para o TMFont2.
+                    dib->pixels[static_cast<size_t>(dy) * dib->w + dx] =
+                        0xFF000000u | (static_cast<uint32_t>(cr) << 16)
+                        | (static_cast<uint32_t>(cg) << 8) | static_cast<uint32_t>(cb);
+                }
+            }
+        }
+        penX += advF;
+    }
+    return TRUE;
+}

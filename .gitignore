@@ -1,0 +1,31 @@
+# builds / artifacts
+**/build/
+**/build-*/
+**/OUT/
+**/*.o
+**/*.a
+**/*.so
+**/*.nro
+**/*.exe
+**/CMakeCache.txt
+**/CMakeFiles/
+**/.cache/
+
+# runtime data / secrets
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/logs/
+**/backup/
+.env
+.env.*
+
+# editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# fetched at build time
+client/third_party/dxvk-native/
+client/third_party/dxvk-native-aarch64/

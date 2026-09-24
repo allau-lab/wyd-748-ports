@@ -1,0 +1,67 @@
+# Binarios de build (gerados por `go build`)
+/tm.exe
+/tm
+/account-api.exe
+/account-api
+/account-create.exe
+/account-create
+/account_creator.exe
+/server.exe
+/tmp/
+/.tmp/
+*.tmp
+*.tmp-*
+client748/.tmp-*
+/tm-check*
+/tm-review*
+
+# Diagnosticos e simbolos locais do client recompilavel. O executavel de teste
+# e versionado, mas dumps/PDBs/objetos sao regenerados pela source e inflam o
+# historico sem fazer parte da distribuicao.
+client748/client-crash-*.dmp
+client748/*.pdb
+/dia_lookup.obj
+/dump_context.obj
+/resolve-pdb.obj
+/client-source/v769ClientRelease/
+
+# Metadados locais dos agentes Codex/Claude; nao fazem parte do runtime.
+/.codex/
+
+# Cache de build do Go
+.gocache*/
+
+# Dados locais/gerados: contas, hashes e estado de personagem nunca sao source
+data/accounts/*.json
+data/charstate/*.json
+
+# Artefatos de IDE/OS comuns
+.vs/
+__pycache__/
+*.py[cod]
+*.log
+*~
+
+# Capturas de tela geradas ao jogar (nao fazem parte da distribuicao do client)
+client748/screenshot/
+
+# Documentacao do projeto e instrucoes de desenvolvimento sao parte da fonte
+# publicada e devem acompanhar cada versao do emulador.
+
+# Nomes legados que nao podem reaparecer na raiz ativa de client748/. A cadeia
+# binaria preservada pertence exclusivamente a `wyd.exe nativo+patches/` como
+# material historico read-only; o unico candidato executavel e project.exe.
+client748/WYD.patched-wide.exe
+client748/WYD.premacro.exe
+client748/WYDoriginal.exe
+client748/WYD.pre-lindy.exe
+client748/WYD.pre-*.exe
+client748/ItemList.pre-*.bin
+
+# Artefatos de conversao/edicao. O runtime usa os equivalentes autoritativos
+# versionados em data/SkillData.csv e client748/SkillData.bin.
+/data/SkillData.bin
+/client748/SkillData.csv
+/client748/serverlist - Copy.bin
+/CLIENTS/WYD/WYD.log
+/CLIENTS/WYD/ScreenShot/
